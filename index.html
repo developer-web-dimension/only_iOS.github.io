@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+  <title>WebXR Cube AR with Plane Detection</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@2.0.3/build/webxr-polyfill.min.js"></script>
+  <script src="https://unpkg.com/three@0.126.0/build/three.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    #ar-button {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 24px;
+      font-size: 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <button id="ar-button">Start AR</button>
+
+  <script>
+    let currentSession = null;
+    let planeMarkers = new Map();
+
+    const startAR = async () => {
+      if (currentSession === null) {
+        const session = await navigator.xr.requestSession("immersive-ar", {
+          requiredFeatures: ['hit-test', 'dom-overlay'],
+          domOverlay: { root: document.body }
+        });
+
+        const canvas = document.createElement("canvas");
+        document.body.appendChild(canvas);
+        const gl = canvas.getContext("webgl", {xrCompatible: true});
+
+        const renderer = new THREE.WebGLRenderer({
+          alpha: true,
+          preserveDrawingBuffer: true,
+          canvas: canvas,
+          context: gl
+        });
+        renderer.autoClear = false;
+
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera();
+        camera.matrixAutoUpdate = false;
+
+        const referenceSpace = await session.requestReferenceSpace('local');
+        
+        session.updateRenderState({
+          baseLayer: new XRWebGLLayer(session, gl)
+        });
+
+        const textureLoader = new THREE.TextureLoader();
+        const cubeTexture = textureLoader.load('WebD_texture.jpg');
+
+        const onXRFrame = (time, frame) => {
+          session.requestAnimationFrame(onXRFrame);
+
+          const pose = frame.getViewerPose(referenceSpace);
+          if (pose) {
+            const view = pose.views[0];
+            const viewport = session.renderState.baseLayer.getViewport(view);
+            renderer.setSize(viewport.width, viewport.height);
+
+            camera.matrix.fromArray(view.transform.matrix);
+            camera.projectionMatrix.fromArray(view.projectionMatrix);
+            camera.updateMatrixWorld(true);
+
+            // Plane detection
+            const detectedPlanes = frame.detectedPlanes;
+            detectedPlanes.forEach((plane) => {
+              if (!planeMarkers.has(plane)) {
+                const geometry = new THREE.PlaneGeometry(1, 1);
+                const material = new THREE.MeshBasicMaterial({
+                  color: 0xffff00,
+                  transparent: true,
+                  opacity: 0.5,
+                  side: THREE.DoubleSide
+                });
+                const planeMarker = new THREE.Mesh(geometry, material);
+                planeMarker.rotateX(-Math.PI / 2);
+                scene.add(planeMarker);
+                planeMarkers.set(plane, planeMarker);
+              }
+
+              const planeMarker = planeMarkers.get(plane);
+              const planePose = frame.getPose(plane.planeSpace, referenceSpace);
+              if (planePose) {
+                planeMarker.position.set(planePose.transform.position.x, planePose.transform.position.y, planePose.transform.position.z);
+                planeMarker.quaternion.set(planePose.transform.orientation.x, planePose.transform.orientation.y, planePose.transform.orientation.z, planePose.transform.orientation.w);
+                planeMarker.scale.set(plane.extent[0], plane.extent[1], 1);
+              }
+            });
+
+            renderer.render(scene, camera);
+          }
+        };
+
+        session.requestAnimationFrame(onXRFrame);
+
+        session.addEventListener("select", (event) => {
+          const cube = new THREE.Mesh(
+            new THREE.BoxGeometry(0.1, 0.1, 0.1),
+            new THREE.MeshBasicMaterial({map: cubeTexture})
+          );
+          const frame = event.frame;
+          const pose = frame.getPose(event.inputSource.targetRaySpace, referenceSpace);
+          if (pose) {
+            cube.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+            scene.add(cube);
+          }
+        });
+
+        currentSession = session;
+      } else {
+        currentSession.end();
+      }
+    };
+
+    document.getElementById("ar-button").addEventListener("click", startAR);
+  </script>
+</body>
+</html>
